@@ -172,6 +172,165 @@ def upload():
     abort(404)
 
 
+@editbook.route("/ai-format/<int:book_id>", methods=['POST'])
+@login_required_if_no_ano
+@edit_required
+def ai_format_book(book_id):
+    """Forked feature: send a book's EPUB to the AI formatter bridge,
+    receive a cleaned copy back, and import it as a new library entry
+    titled '<original> (AI Formatted)'.
+
+    The bridge service translates this HTTP call into a `docker exec` against
+    the claude-code container, which runs the `format-epub` skill. See
+    https://github.com/akashjagdhale/calibre-web for details.
+    """
+    import os
+    import secrets
+    import subprocess
+    import urllib.request
+    import json as _json
+
+    book = calibre_db.get_book(book_id)
+    if not book:
+        return jsonify({"success": False, "error": "Book not found"}), 404
+
+    epub_data = next(
+        (d for d in book.data if (d.format or "").upper() == "EPUB"),
+        None,
+    )
+    if not epub_data:
+        return jsonify({
+            "success": False,
+            "error": "No EPUB format on this book — AI formatter only handles EPUBs",
+        }), 400
+
+    # Local view (inside this container) and host view (the path the
+    # claude-code container sees, since it mounts /docker:rw).
+    local_library = config.get_book_path()
+    host_library = os.environ.get("LIBRARY_HOST_PATH", "/docker/calibre-web/library")
+
+    book_dir_local = os.path.join(local_library, book.path)
+    epub_filename = epub_data.name + ".epub"
+    input_local = os.path.join(book_dir_local, epub_filename)
+    if not os.path.exists(input_local):
+        return jsonify({
+            "success": False,
+            "error": f"EPUB file missing on disk: {input_local}",
+        }), 500
+
+    # Staging area: a hidden subdir under the library so claude-code can write
+    # to it (it only sees /docker/calibre-web/library/...) and we can read it
+    # back here. Calibre-Web does not auto-scan this dir.
+    staging_local = os.path.join(local_library, "_ai_format_staging")
+    os.makedirs(staging_local, exist_ok=True)
+    token = secrets.token_hex(8)
+    staging_filename = f"{book_id}_{token}.epub"
+    output_local = os.path.join(staging_local, staging_filename)
+
+    # Translate to host paths for the bridge / claude-code.
+    input_host = input_local.replace(local_library, host_library, 1)
+    output_host = output_local.replace(local_library, host_library, 1)
+
+    bridge_url = os.environ.get("AI_FORMAT_BRIDGE_URL",
+                                "http://epub-formatter-bridge:8080/format")
+    bridge_timeout = int(os.environ.get("AI_FORMAT_BRIDGE_TIMEOUT", "900"))
+
+    instructions = (request.form.get("instructions") or "").strip() or None
+    payload = {
+        "input_path": input_host,
+        "output_path": output_host,
+    }
+    if instructions:
+        payload["instructions"] = instructions
+
+    log.info("AI format: book_id=%s input=%s output=%s", book_id, input_host, output_host)
+
+    try:
+        req = urllib.request.Request(
+            bridge_url,
+            data=_json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=bridge_timeout) as resp:
+            bridge_response = _json.loads(resp.read().decode("utf-8"))
+    except Exception as e:  # noqa: BLE001
+        log.exception("AI formatter bridge call failed for book %s", book_id)
+        return jsonify({
+            "success": False,
+            "error": f"Bridge call failed: {e}",
+        }), 502
+
+    if not bridge_response.get("success"):
+        return jsonify({
+            "success": False,
+            "error": bridge_response.get("summary") or "Formatter failed",
+            "stderr": bridge_response.get("stderr"),
+        }), 500
+
+    if not os.path.exists(output_local):
+        return jsonify({
+            "success": False,
+            "error": f"Bridge reported success but output file missing: {output_local}",
+        }), 500
+
+    # Import the cleaned EPUB as a new book entry via calibredb so metadata.db
+    # is updated atomically and Calibre-Web's library view picks it up.
+    calibredb = "/usr/bin/calibredb"
+    try:
+        add_result = subprocess.run(
+            [calibredb, "add", "--with-library", local_library, output_local],
+            capture_output=True, text=True, timeout=120, check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        log.error("calibredb add failed: %s", e.stderr)
+        return jsonify({
+            "success": False,
+            "error": f"calibredb add failed: {e.stderr or e.stdout}",
+        }), 500
+
+    # Parse new book id from `Added book ids: 42`.
+    new_book_id = None
+    for line in add_result.stdout.splitlines():
+        if "Added book ids" in line:
+            try:
+                new_book_id = int(line.rsplit(":", 1)[-1].strip().split(",")[0])
+            except (ValueError, IndexError):
+                pass
+            break
+
+    # Suffix the new book's title to mark it as the AI-formatted version.
+    if new_book_id is not None:
+        try:
+            new_title = (book.title or "Book") + " (AI Formatted)"
+            subprocess.run(
+                [calibredb, "set_metadata", "--with-library", local_library,
+                 "--field", f"title:{new_title}", str(new_book_id)],
+                capture_output=True, text=True, timeout=60, check=False,
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("Failed to update title on new book %s", new_book_id)
+
+    # Clean up staging file (calibredb already copied it into the library).
+    try:
+        os.unlink(output_local)
+    except OSError:
+        pass
+
+    # Force Calibre-Web to re-read metadata.db so the new book appears.
+    try:
+        calibre_db.reconnect_db(config, ub.app_DB_path)
+    except Exception:  # noqa: BLE001
+        pass
+
+    return jsonify({
+        "success": True,
+        "summary": bridge_response.get("summary"),
+        "new_book_id": new_book_id,
+        "new_book_url": url_for("web.show_book", book_id=new_book_id) if new_book_id else None,
+    })
+
+
 @editbook.route("/admin/book/convert/<int:book_id>", methods=['POST'])
 @login_required_if_no_ano
 @edit_required

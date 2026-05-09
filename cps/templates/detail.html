@@ -346,8 +346,20 @@
                             <a href="{{ url_for('edit-book.show_edit_book', book_id=entry.id) }}"
                                class="btn btn-sm btn-primary" id="edit_book" role="button"><span
                                     class="glyphicon glyphicon-edit"></span> {{ _('Edit Metadata') }}</a>
+                            {% if entry.data|selectattr('format', 'equalto', 'EPUB')|list %}
+                            <button type="button" id="ai_format_book"
+                                    class="btn btn-sm btn-success"
+                                    data-book-id="{{ entry.id }}"
+                                    data-url="{{ url_for('edit-book.ai_format_book', book_id=entry.id) }}">
+                                <span class="glyphicon glyphicon-magnet"></span>
+                                {{ _('Format with AI') }}
+                            </button>
+                            {% endif %}
                         </div>
                         <div class="btn btn-default" data-back="{{ url_for('web.index') }}" id="back">{{_('Cancel')}}</div>
+                   </div>
+                   <div class="col-sm-12" id="ai_format_status" style="display: none; margin-top: 12px;">
+                        <div class="alert" role="alert" id="ai_format_alert"></div>
                    </div>
                 {% endif %}
         </div>
@@ -372,6 +384,70 @@
 <script src="{{ url_for('static', filename='js/details.js') }}"></script>
 <script src="{{ url_for('static', filename='js/fullscreen.js') }}"></script>
 <script type="text/javascript">
+// Forked feature: "Format with AI" button on the book detail page. Calls
+// /ai-format/<book_id>, which proxies to the EPUB formatter bridge → claude-code.
+(function() {
+    var btn = document.getElementById('ai_format_book');
+    if (!btn) return;
+    var statusBox = document.getElementById('ai_format_status');
+    var alertBox = document.getElementById('ai_format_alert');
+
+    function setStatus(kind, html) {
+        alertBox.className = 'alert alert-' + kind;
+        alertBox.innerHTML = html;
+        statusBox.style.display = 'block';
+    }
+
+    btn.addEventListener('click', function() {
+        var url = btn.getAttribute('data-url');
+        if (!confirm("{{ _('Format this book with AI? This may take a few minutes. The original is preserved — a new entry titled \"… (AI Formatted)\" will be added to your library.') }}")) {
+            return;
+        }
+        btn.disabled = true;
+        var originalHtml = btn.innerHTML;
+        btn.innerHTML = '<span class="glyphicon glyphicon-refresh glyphicon-spin"></span> {{ _('Formatting…') }}';
+        setStatus('info', "{{ _('Sending the book to Claude Code on the VPS — this can take up to 15 minutes for long books. Please don\\'t close the page.') }}");
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', url, true);
+        xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+        xhr.timeout = 900000; // 15 min
+        xhr.onload = function() {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+            var resp;
+            try { resp = JSON.parse(xhr.responseText); } catch (e) { resp = null; }
+            if (xhr.status >= 200 && xhr.status < 300 && resp && resp.success) {
+                var msg = "{{ _('Done.') }} ";
+                if (resp.summary) msg += '<br><strong>{{ _("Summary:") }}</strong> ' + escapeHtml(resp.summary);
+                if (resp.new_book_url) {
+                    msg += '<br><a href="' + resp.new_book_url + '" class="btn btn-sm btn-success" style="margin-top:8px;">{{ _("Open the AI-formatted version") }}</a>';
+                }
+                setStatus('success', msg);
+            } else {
+                var err = (resp && (resp.error || resp.summary)) || ('HTTP ' + xhr.status);
+                setStatus('danger', "{{ _('Formatter failed:') }} " + escapeHtml(err));
+            }
+        };
+        xhr.onerror = function() {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+            setStatus('danger', "{{ _('Network error talking to the formatter bridge.') }}");
+        };
+        xhr.ontimeout = function() {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+            setStatus('danger', "{{ _('Timed out after 15 minutes — the formatter may still be running on the VPS. Check Calibre-Web logs.') }}");
+        };
+        xhr.send();
+    });
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, function(c) {
+            return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+        });
+    }
+})();
 </script>
 
 {% endblock %}
