@@ -207,16 +207,23 @@ small { color: var(--aj-text-muted); }
     color: inherit;
 }
 
-/* Hide irrelevant sidebar entries — we keep only Books, Categories, Authors, Shelves */
+/* Hide irrelevant sidebar entries — we keep only:
+   nav_new (Books / library home)
+   nav_cat (Categories — genres)
+   nav_author (Authors)
+   nav_createshelf (Create a Shelf)
+   plus user-created shelves (e.g. OCeanofPDF.com).
+*/
 #nav_hot,
+#nav_download,
 #nav_rated,
 #nav_read,
 #nav_unread,
-#nav_discover,
+#nav_rand,
 #nav_serie,
 #nav_publisher,
 #nav_lang,
-#nav_rating,
+#nav_rate,
 #nav_format,
 #nav_archived,
 #nav_list,
