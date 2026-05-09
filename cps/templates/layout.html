@@ -22,6 +22,8 @@
        <link href="{{ url_for('static', filename='css/caliBlur.css') }}" rel="stylesheet" media="screen">
        <link href="{{ url_for('static', filename='css/caliBlur_override.css') }}" rel="stylesheet" media="screen">
     {% endif %}
+    <!-- Akash brand theme override (loaded last so it wins) -->
+    <link href="{{ url_for('static', filename='css/akash-theme.css') }}" rel="stylesheet" media="screen">
   </head>
   <body class="{{ page }} {{ bodyClass }}{% if g.current_theme == 1 %} blur{% endif %}" data-text="{{_('Home')}}" data-textback="{{_('Back')}}">
     <!-- Static navbar -->
