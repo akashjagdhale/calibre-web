@@ -1,0 +1,14 @@
+# Custom Calibre-Web image for akashjagdhale's deployment.
+#
+# Layers our forked cps/ on top of the linuxserver/calibre-web base so we keep
+# the universal-calibre mod (KFX/AZW3 conversion), DeDRM compatibility, and
+# linuxserver's init system, while running our own modified Python code.
+#
+# Build:    docker build -f Dockerfile.akash -t calibre-web-akash:latest .
+# Compose:  docker-compose.yml uses image: calibre-web-akash:latest
+
+FROM lscr.io/linuxserver/calibre-web:latest
+
+# Override the upstream cps/ with our forked version. --chown matches abc user
+# (uid 1000) used by the linuxserver image at runtime.
+COPY --chown=abc:abc cps/ /app/calibre-web/cps/

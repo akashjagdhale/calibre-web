@@ -274,4 +274,14 @@ def upload(uploadfile, rar_excecutable):
     tmp_file_path = os.path.join(tmp_dir, md5)
     log.debug("Temporary file: %s", tmp_file_path)
     uploadfile.save(tmp_file_path)
+
+    # Custom fork extension: run upload-time cleaners (e.g., OceanofPDF
+    # branding stripper) before metadata extraction, so titles/descriptions
+    # read from the cleaned file.
+    try:
+        from .cleaners import run_cleaners
+        run_cleaners(tmp_file_path, file_extension)
+    except Exception as e:  # noqa: BLE001 - never break uploads on cleaner errors
+        log.exception("Upload cleaners errored on %s: %s", tmp_file_path, e)
+
     return process(tmp_file_path, filename_root, file_extension, rar_excecutable)
