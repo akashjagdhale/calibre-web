@@ -510,3 +510,120 @@ body.register form {
 
 /* Hide the "Simple Theme" toggle and other low-value items */
 #basic, .navbar-nav .glyphicon-phone { display: none !important; }
+
+/* ─── book_edit clutter cleanup ────────────────────────────
+   The user explicitly asked to strip features they don't use. Hide
+   format conversion, additional-format upload, and metadata fields
+   that are not part of a "minimal personal library" workflow. */
+
+/* Convert format section + secondary format upload + per-format delete */
+.more-stuff:has(#book_convert_frm),
+.more-stuff:has(#form-upload-format),
+#form-upload-format,
+form#book_convert_frm,
+button#delete_format,
+.form-group:has(#delete_format) {
+    display: none !important;
+}
+
+/* On the metadata edit form, hide rarely-used fields. We keep:
+     Title, Author, Tags, Description, Cover */
+#book_edit_frm .form-group:has(#series),
+#book_edit_frm .form-group:has(#series_index),
+#book_edit_frm .form-group:has(#pubdate),
+#book_edit_frm .form-group:has(#publisher),
+#book_edit_frm .form-group:has(#languages),
+#book_edit_frm .form-group:has(#rating),
+#book_edit_frm .form-group:has(#publishing_date),
+#book_edit_frm .identifiers-fields,
+#book_edit_frm .form-group:has(input[id^="identifier_val"]),
+#book_edit_frm #add_identifier_btn,
+#book_edit_frm label[for="series"],
+#book_edit_frm label[for="series_index"] {
+    display: none !important;
+}
+
+/* Hide the "Add Identifier" / identifier table — unused */
+table.identifiers,
+#identifier_table,
+.identifiers-row {
+    display: none !important;
+}
+
+/* Tighten up the edit-book form spacing */
+#book_edit_frm .form-group { margin-bottom: 18px; }
+#book_edit_frm label { margin-top: 4px; }
+
+/* The flip-author/title button is confusing without context — hide */
+#xchange { display: none !important; }
+
+/* ─── Login page polish ──────────────────────────────────── */
+body.login {
+    background: var(--aj-bg) !important;
+}
+body.login .navbar { display: none; }
+body.login .col-sm-2 { display: none; }
+body.login .col-sm-10 { width: 100%; max-width: 380px; margin: 100px auto; padding: 32px; float: none; }
+body.login form, body.login #loginform {
+    background: var(--aj-surface);
+    border: 1px solid var(--aj-border-soft);
+    border-radius: var(--aj-radius-lg);
+    padding: 32px;
+}
+body.login h1, body.login h2 {
+    text-align: center;
+    color: var(--aj-text-strong);
+    font-size: 1.5rem;
+    margin-bottom: 24px;
+}
+body.login h1::before, body.login h2::before { content: 'Library'; }
+body.login h1, body.login h2 { font-size: 0; line-height: 1; }
+body.login h1::before, body.login h2::before { font-size: 1.5rem; line-height: 1.2; }
+
+/* ─── Discover / Random books — give it room or hide if empty ─── */
+.discover .col-sm-10 > h2 { margin-bottom: 8px; }
+
+/* Sort/filter button row that was cluttering the empty home — let it breathe */
+.filterheader, .pagination + div { margin-bottom: 24px; }
+
+/* Empty-library state polish — center any "No books" messages */
+.col-sm-10 > p:only-child {
+    text-align: center;
+    padding: 80px 16px;
+    color: var(--aj-text-muted);
+    font-size: 1rem;
+}
+
+/* ─── Reader chrome (when reading a book) ────────────────── */
+body.epub-viewer, body.read { background: var(--aj-bg) !important; }
+
+/* ─── Misc Bootstrap leftovers ───────────────────────────── */
+.well {
+    background: var(--aj-surface) !important;
+    border: 1px solid var(--aj-border) !important;
+    box-shadow: none !important;
+    border-radius: var(--aj-radius) !important;
+}
+.panel, .panel-default {
+    background: var(--aj-surface) !important;
+    border-color: var(--aj-border) !important;
+    box-shadow: none !important;
+    border-radius: var(--aj-radius-lg) !important;
+}
+.panel-heading {
+    background: var(--aj-surface-alt) !important;
+    border-color: var(--aj-border-soft) !important;
+    color: var(--aj-text-strong);
+    border-radius: var(--aj-radius-lg) var(--aj-radius-lg) 0 0 !important;
+}
+
+/* Glyphicons that lose color contrast on dark bg */
+.glyphicon { color: inherit; }
+
+/* Active sort button in book grid header */
+.btn-toolbar .btn.active,
+.btn-group .btn.active {
+    background: var(--aj-accent) !important;
+    color: var(--aj-bg) !important;
+    border-color: var(--aj-accent) !important;
+}
