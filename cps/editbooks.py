@@ -28,7 +28,7 @@ from shutil import copyfile
 from markupsafe import escape, Markup  # dependency of flask
 from functools import wraps
 
-from flask import Blueprint, request, flash, redirect, url_for, abort, jsonify, make_response, Response
+from flask import Blueprint, request, flash, redirect, url_for, abort, jsonify, make_response, Response, current_app
 from flask_babel import gettext as _
 from flask_babel import lazy_gettext as N_
 from flask_babel import get_locale
@@ -51,6 +51,33 @@ from .string_helper import strip_whitespaces
 
 editbook = Blueprint('edit-book', __name__)
 log = logger.create()
+
+
+def _trigger_background_ai_format(app, book_id, file_extension):
+    """Fire-and-forget: kick off AI formatting on an uploaded EPUB.
+
+    The HTTP upload response returns immediately; this thread does the
+    multi-minute Claude Code call and then replaces the EPUB on the same
+    book entry. Non-EPUB uploads are skipped.
+    """
+    if (file_extension or "").lstrip(".").lower() != "epub":
+        return
+    import threading
+
+    def _worker():
+        with app.app_context():
+            try:
+                ok, _status, payload = _ai_format_run(book_id, mode="replace")
+                if ok:
+                    log.info("Auto AI format succeeded for book %s: %s",
+                             book_id, payload.get("summary"))
+                else:
+                    log.warning("Auto AI format failed for book %s: %s",
+                                book_id, payload.get("error"))
+            except Exception:  # noqa: BLE001
+                log.exception("Auto AI format crashed for book %s", book_id)
+
+    threading.Thread(target=_worker, daemon=True, name=f"ai-format-{book_id}").start()
 
 
 def upload_required(f):
@@ -156,13 +183,22 @@ def upload():
                 WorkerThread.add(current_user.name, TaskUpload(upload_text, escape(title)))
                 helper.add_book_to_thumbnail_cache(book_id)
 
+                # Custom fork feature: every uploaded EPUB is auto-formatted by
+                # Claude Code in the background. The book entry stays the same;
+                # the EPUB inside it gets replaced with the cleaned version
+                # once the AI finishes (typically a few minutes for normal-length
+                # books). Failures are logged and never block the upload.
+                _trigger_background_ai_format(current_app._get_current_object(), book_id, meta.extension.lower())
+
                 if len(request.files.getlist("btn-upload")) < 2:
-                    if current_user.role_edit() or current_user.role_admin():
-                        resp = {"location": url_for('edit-book.show_edit_book', book_id=book_id)}
-                        return make_response(jsonify(resp))
-                    else:
-                        resp = {"location": url_for('web.show_book', book_id=book_id)}
-                        return Response(json.dumps(resp), mimetype='application/json')
+                    # Always send the user to the book detail page after an
+                    # upload — that's where the "AI is polishing this book" badge
+                    # shows up. The old behaviour of redirecting admins to the
+                    # edit-metadata form has been removed since it was the
+                    # primary cause of confusion (the AI-format button doesn't
+                    # appear there).
+                    resp = {"location": url_for('web.show_book', book_id=book_id) + "?just_uploaded=1"}
+                    return make_response(jsonify(resp))
             except (OperationalError, IntegrityError, StaleDataError) as e:
                 calibre_db.session.rollback()
                 log.error_or_exception("Database error: {}".format(e))
@@ -172,17 +208,20 @@ def upload():
     abort(404)
 
 
-@editbook.route("/ai-format/<int:book_id>", methods=['POST'])
-@login_required_if_no_ano
-@edit_required
-def ai_format_book(book_id):
-    """Forked feature: send a book's EPUB to the AI formatter bridge,
-    receive a cleaned copy back, and import it as a new library entry
-    titled '<original> (AI Formatted)'.
+def _ai_format_run(book_id, mode="replace", instructions=None):
+    """Run the AI EPUB formatter against the EPUB attached to ``book_id``.
 
-    The bridge service translates this HTTP call into a `docker exec` against
-    the claude-code container, which runs the `format-epub` skill. See
-    https://github.com/akashjagdhale/calibre-web for details.
+    Returns ``(success: bool, status_code: int, payload: dict)``.
+
+    Modes:
+      * ``"replace"`` — overwrite the existing EPUB format on the same book
+        entry (the library keeps a single, cleaned book per upload).
+      * ``"new"`` — add the cleaned version as a new book titled
+        ``"<orig title> (AI Formatted)"`` so the original remains.
+
+    This is a plain function (no ``request``) so the upload route can fire
+    it from a background thread after a successful upload, kicking off the
+    AI cleanup automatically.
     """
     import os
     import secrets
@@ -192,20 +231,18 @@ def ai_format_book(book_id):
 
     book = calibre_db.get_book(book_id)
     if not book:
-        return jsonify({"success": False, "error": "Book not found"}), 404
+        return False, 404, {"success": False, "error": "Book not found"}
 
     epub_data = next(
         (d for d in book.data if (d.format or "").upper() == "EPUB"),
         None,
     )
     if not epub_data:
-        return jsonify({
+        return False, 400, {
             "success": False,
             "error": "No EPUB format on this book — AI formatter only handles EPUBs",
-        }), 400
+        }
 
-    # Local view (inside this container) and host view (the path the
-    # claude-code container sees, since it mounts /docker:rw).
     local_library = config.get_book_path()
     host_library = os.environ.get("LIBRARY_HOST_PATH", "/docker/calibre-web/library")
 
@@ -213,21 +250,19 @@ def ai_format_book(book_id):
     epub_filename = epub_data.name + ".epub"
     input_local = os.path.join(book_dir_local, epub_filename)
     if not os.path.exists(input_local):
-        return jsonify({
+        return False, 500, {
             "success": False,
             "error": f"EPUB file missing on disk: {input_local}",
-        }), 500
+        }
 
-    # Staging area: a hidden subdir under the library so claude-code can write
-    # to it (it only sees /docker/calibre-web/library/...) and we can read it
-    # back here. Calibre-Web does not auto-scan this dir.
+    # Staging area for the cleaned output. claude-code can reach it (it
+    # mounts /docker:rw); Calibre-Web won't auto-scan a dot-prefixed dir.
     staging_local = os.path.join(local_library, "_ai_format_staging")
     os.makedirs(staging_local, exist_ok=True)
     token = secrets.token_hex(8)
     staging_filename = f"{book_id}_{token}.epub"
     output_local = os.path.join(staging_local, staging_filename)
 
-    # Translate to host paths for the bridge / claude-code.
     input_host = input_local.replace(local_library, host_library, 1)
     output_host = output_local.replace(local_library, host_library, 1)
 
@@ -235,15 +270,12 @@ def ai_format_book(book_id):
                                 "http://epub-formatter-bridge:8080/format")
     bridge_timeout = int(os.environ.get("AI_FORMAT_BRIDGE_TIMEOUT", "900"))
 
-    instructions = (request.form.get("instructions") or "").strip() or None
-    payload = {
-        "input_path": input_host,
-        "output_path": output_host,
-    }
+    payload = {"input_path": input_host, "output_path": output_host}
     if instructions:
         payload["instructions"] = instructions
 
-    log.info("AI format: book_id=%s input=%s output=%s", book_id, input_host, output_host)
+    log.info("AI format: book_id=%s mode=%s in=%s out=%s",
+             book_id, mode, input_host, output_host)
 
     try:
         req = urllib.request.Request(
@@ -256,27 +288,53 @@ def ai_format_book(book_id):
             bridge_response = _json.loads(resp.read().decode("utf-8"))
     except Exception as e:  # noqa: BLE001
         log.exception("AI formatter bridge call failed for book %s", book_id)
-        return jsonify({
+        return False, 502, {
             "success": False,
             "error": f"Bridge call failed: {e}",
-        }), 502
+        }
 
     if not bridge_response.get("success"):
-        return jsonify({
+        return False, 500, {
             "success": False,
             "error": bridge_response.get("summary") or "Formatter failed",
             "stderr": bridge_response.get("stderr"),
-        }), 500
+        }
 
     if not os.path.exists(output_local):
-        return jsonify({
+        return False, 500, {
             "success": False,
             "error": f"Bridge reported success but output file missing: {output_local}",
-        }), 500
+        }
 
-    # Import the cleaned EPUB as a new book entry via calibredb so metadata.db
-    # is updated atomically and Calibre-Web's library view picks it up.
     calibredb = "/usr/bin/calibredb"
+
+    if mode == "replace":
+        # Replace the EPUB format on the same book — single library entry per upload.
+        try:
+            subprocess.run(
+                [calibredb, "add_format", "--with-library", local_library,
+                 str(book_id), output_local],
+                capture_output=True, text=True, timeout=120, check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            log.error("calibredb add_format failed: %s", e.stderr)
+            return False, 500, {
+                "success": False,
+                "error": f"calibredb add_format failed: {e.stderr or e.stdout}",
+            }
+        try:
+            os.unlink(output_local)
+        except OSError:
+            pass
+        return True, 200, {
+            "success": True,
+            "mode": "replace",
+            "summary": bridge_response.get("summary"),
+            "book_id": book_id,
+            "book_url": url_for("web.show_book", book_id=book_id),
+        }
+
+    # mode == "new" — add as a separate library entry.
     try:
         add_result = subprocess.run(
             [calibredb, "add", "--with-library", local_library, output_local],
@@ -284,12 +342,11 @@ def ai_format_book(book_id):
         )
     except subprocess.CalledProcessError as e:
         log.error("calibredb add failed: %s", e.stderr)
-        return jsonify({
+        return False, 500, {
             "success": False,
             "error": f"calibredb add failed: {e.stderr or e.stdout}",
-        }), 500
+        }
 
-    # Parse new book id from `Added book ids: 42`.
     new_book_id = None
     for line in add_result.stdout.splitlines():
         if "Added book ids" in line:
@@ -299,7 +356,6 @@ def ai_format_book(book_id):
                 pass
             break
 
-    # Suffix the new book's title to mark it as the AI-formatted version.
     if new_book_id is not None:
         try:
             new_title = (book.title or "Book") + " (AI Formatted)"
@@ -311,24 +367,34 @@ def ai_format_book(book_id):
         except Exception:  # noqa: BLE001
             log.exception("Failed to update title on new book %s", new_book_id)
 
-    # Clean up staging file (calibredb already copied it into the library).
     try:
         os.unlink(output_local)
     except OSError:
         pass
 
-    # Force Calibre-Web to re-read metadata.db so the new book appears.
-    try:
-        calibre_db.reconnect_db(config, ub.app_DB_path)
-    except Exception:  # noqa: BLE001
-        pass
-
-    return jsonify({
+    return True, 200, {
         "success": True,
+        "mode": "new",
         "summary": bridge_response.get("summary"),
         "new_book_id": new_book_id,
         "new_book_url": url_for("web.show_book", book_id=new_book_id) if new_book_id else None,
-    })
+    }
+
+
+@editbook.route("/ai-format/<int:book_id>", methods=['POST'])
+@login_required_if_no_ano
+@edit_required
+def ai_format_book(book_id):
+    """HTTP wrapper around _ai_format_run.
+
+    Query string:
+      * ``?mode=replace`` (default) — single library entry, EPUB replaced
+      * ``?mode=new`` — keep original, add AI-formatted entry alongside
+    """
+    mode = request.args.get("mode", "replace")
+    instructions = (request.form.get("instructions") or "").strip() or None
+    _, status, payload = _ai_format_run(book_id, mode=mode, instructions=instructions)
+    return jsonify(payload), status
 
 
 @editbook.route("/admin/book/convert/<int:book_id>", methods=['POST'])

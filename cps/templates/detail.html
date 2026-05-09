@@ -341,18 +341,27 @@
 
                 {% endif %}
                 {% if current_user.role_edit() %}
+                    {% if request.args.get('just_uploaded') == '1' and entry.data|selectattr('format', 'equalto', 'EPUB')|list %}
+                    <div class="col-sm-12" id="ai_just_uploaded_banner" style="margin-bottom: 16px;">
+                        <div class="alert" role="alert" style="border-left: 3px solid #D4773B;">
+                            <span class="glyphicon glyphicon-refresh glyphicon-spin"></span>
+                            <strong>{{ _('AI is polishing this book in the background.') }}</strong>
+                            {{ _('It typically takes a few minutes — broken paragraphs, dialog formatting, OCR artefacts, and any leftover branding will be cleaned up. Refresh the page once it\'s done.') }}
+                        </div>
+                    </div>
+                    {% endif %}
                     <div class="col-sm-12">
                         <div class="btn-group" role="group" aria-label="Edit/Delete book">
                             <a href="{{ url_for('edit-book.show_edit_book', book_id=entry.id) }}"
-                               class="btn btn-sm btn-primary" id="edit_book" role="button"><span
+                               class="btn btn-sm btn-default" id="edit_book" role="button"><span
                                     class="glyphicon glyphicon-edit"></span> {{ _('Edit Metadata') }}</a>
                             {% if entry.data|selectattr('format', 'equalto', 'EPUB')|list %}
                             <button type="button" id="ai_format_book"
-                                    class="btn btn-sm btn-success"
+                                    class="btn btn-sm btn-primary"
                                     data-book-id="{{ entry.id }}"
-                                    data-url="{{ url_for('edit-book.ai_format_book', book_id=entry.id) }}">
+                                    data-url="{{ url_for('edit-book.ai_format_book', book_id=entry.id) }}?mode=replace">
                                 <span class="glyphicon glyphicon-magnet"></span>
-                                {{ _('Format with AI') }}
+                                {{ _('Re-format with AI') }}
                             </button>
                             {% endif %}
                         </div>
@@ -400,7 +409,7 @@
 
     btn.addEventListener('click', function() {
         var url = btn.getAttribute('data-url');
-        if (!confirm("{{ _('Format this book with AI? This may take a few minutes. The original is preserved — a new entry titled \"… (AI Formatted)\" will be added to your library.') }}")) {
+        if (!confirm("{{ _('Re-format this book with AI? This may take a few minutes. The EPUB on this book entry will be replaced with the cleaned version.') }}")) {
             return;
         }
         btn.disabled = true;
@@ -418,11 +427,9 @@
             var resp;
             try { resp = JSON.parse(xhr.responseText); } catch (e) { resp = null; }
             if (xhr.status >= 200 && xhr.status < 300 && resp && resp.success) {
-                var msg = "{{ _('Done.') }} ";
+                var msg = "{{ _('Done — this book\\'s EPUB has been replaced with the cleaned version.') }} ";
                 if (resp.summary) msg += '<br><strong>{{ _("Summary:") }}</strong> ' + escapeHtml(resp.summary);
-                if (resp.new_book_url) {
-                    msg += '<br><a href="' + resp.new_book_url + '" class="btn btn-sm btn-success" style="margin-top:8px;">{{ _("Open the AI-formatted version") }}</a>';
-                }
+                msg += '<br><a href="" onclick="window.location.reload(); return false;" class="btn btn-sm btn-primary" style="margin-top:8px;">{{ _("Reload to see updated book") }}</a>';
                 setStatus('success', msg);
             } else {
                 var err = (resp && (resp.error || resp.summary)) || ('HTTP ' + xhr.status);
