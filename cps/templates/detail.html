@@ -346,7 +346,7 @@
                         <div class="alert" role="alert" style="border-left: 3px solid #D4773B;">
                             <span class="glyphicon glyphicon-refresh glyphicon-spin"></span>
                             <strong>{{ _('AI is polishing this book in the background.') }}</strong>
-                            {{ _('It typically takes a few minutes — broken paragraphs, dialog formatting, OCR artefacts, and any leftover branding will be cleaned up. Refresh the page once it\'s done.') }}
+                            {{ _('It typically takes a few minutes — broken paragraphs, dialog formatting, OCR artefacts, and any leftover branding will be cleaned up. Refresh the page once it is done.') }}
                         </div>
                     </div>
                     {% endif %}
@@ -415,7 +415,7 @@
         btn.disabled = true;
         var originalHtml = btn.innerHTML;
         btn.innerHTML = '<span class="glyphicon glyphicon-refresh glyphicon-spin"></span> {{ _('Formatting…') }}';
-        setStatus('info', "{{ _('Sending the book to Claude Code on the VPS — this can take up to 15 minutes for long books. Please don\\'t close the page.') }}");
+        setStatus('info', "{{ _('Sending the book to Claude Code on the VPS — this can take up to 15 minutes for long books. Please do not close the page.') }}");
 
         var xhr = new XMLHttpRequest();
         xhr.open('POST', url, true);
@@ -427,7 +427,7 @@
             var resp;
             try { resp = JSON.parse(xhr.responseText); } catch (e) { resp = null; }
             if (xhr.status >= 200 && xhr.status < 300 && resp && resp.success) {
-                var msg = "{{ _('Done — this book\\'s EPUB has been replaced with the cleaned version.') }} ";
+                var msg = "{{ _('Done — the EPUB on this book has been replaced with the cleaned version.') }} ";
                 if (resp.summary) msg += '<br><strong>{{ _("Summary:") }}</strong> ' + escapeHtml(resp.summary);
                 msg += '<br><a href="" onclick="window.location.reload(); return false;" class="btn btn-sm btn-primary" style="margin-top:8px;">{{ _("Reload to see updated book") }}</a>';
                 setStatus('success', msg);
